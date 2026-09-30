@@ -30,7 +30,7 @@ const errorMessages: Record<string, TranslationKey> = {
   PROVIDER_UNAVAILABLE: "providerUnavailable",
   TIMEOUT: "providerTimeout",
   INVALID_RESPONSE: "invalidResponse",
-  UPSTREAM_ERROR: "providerUnavailable",
+  UPSTREAM_ERROR: "providerRejected",
 };
 
 export default function Home() {

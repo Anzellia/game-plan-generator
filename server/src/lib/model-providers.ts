@@ -143,7 +143,9 @@ export async function generateWithModel(
     });
     if (!response.ok) throw providerError(response.status);
 
-    const payload: unknown = await response.json();
+    const payload: unknown = await response.json().catch(() => {
+      throw new ModelRequestError("INVALID_RESPONSE", 502);
+    });
     const text = responseText(provider, payload).trim();
     if (!text) throw new ModelRequestError("INVALID_RESPONSE", 502);
     return text;
