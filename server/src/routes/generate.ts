@@ -1,10 +1,49 @@
-import OpenAI from "openai";
 import { Router } from "express";
 import { z } from "zod";
+import {
+  generateWithModel,
+  isSupportedModel,
+  ModelRequestError,
+} from "../lib/model-providers";
 
 const GenerateGamePlanBody = z.object({
-  idea: z.string().min(1),
+  idea: z.string().trim().min(1).max(4000),
   language: z.enum(["zh", "ja", "en"]).optional(),
+  provider: z.enum(["openai", "anthropic", "google", "xai", "deepseek"]),
+  model: z.string().min(1).max(100),
+  apiKey: z.string().trim().min(1).max(512),
+});
+
+const GamePlanSchema = z.object({
+  designDoc: z.object({
+    title: z.string(),
+    genre: z.string(),
+    concept: z.string(),
+    coreLoop: z.string(),
+    targetAudience: z.string(),
+    platforms: z.array(z.string()),
+    features: z.array(z.string()).optional(),
+  }),
+  taskList: z.array(z.object({
+    id: z.number(),
+    category: z.string(),
+    title: z.string(),
+    description: z.string().nullable().optional(),
+    priority: z.string(),
+    estimatedHours: z.number(),
+  })),
+  technicalChallenges: z.array(z.object({
+    title: z.string(),
+    difficulty: z.string(),
+    description: z.string(),
+    solution: z.string(),
+  })),
+  weeklyPlan: z.array(z.object({
+    day: z.number(),
+    label: z.string(),
+    tasks: z.array(z.string()),
+    milestone: z.string(),
+  })).length(7),
 });
 
 const LANGUAGE_INSTRUCTIONS: Record<string, string> = {
@@ -18,23 +57,21 @@ export const generateRouter = Router();
 generateRouter.post("/generate", async (req, res) => {
   const parsed = GenerateGamePlanBody.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: "Invalid request body" });
+    res.status(400).json({ error: "INVALID_REQUEST" });
     return;
   }
 
-  const { idea, language = "zh" } = parsed.data;
+  const { idea, language = "zh", provider, model, apiKey } = parsed.data;
+  if (!isSupportedModel(provider, model)) {
+    res.status(400).json({ error: "MODEL_NOT_SUPPORTED" });
+    return;
+  }
+
   const langInstruction =
     LANGUAGE_INSTRUCTIONS[language] ?? LANGUAGE_INSTRUCTIONS.zh;
 
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
   try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
-      messages: [
-        {
-          role: "system",
-          content: `You are a professional game design AI assistant.
+    const systemPrompt = `You are a professional game design AI assistant.
 
 ${langInstruction}
 
@@ -86,25 +123,24 @@ Rules:
 - All keys must be camelCase exactly as shown above.
 - priority values must be exactly: high, medium, or low (lowercase English).
 - difficulty values must be exactly: hard, medium, or easy (lowercase English).
-- category values must be exactly one of: programming, design, art, audio, qa (lowercase English).`,
-        },
-        {
-          role: "user",
-          content: `Game idea: ${idea}`,
-        },
-      ],
-      response_format: {
-        type: "json_object",
-      },
-    });
-
-    const gamePlan = JSON.parse(
-      completion.choices[0].message.content || "{}"
+- category values must be exactly one of: programming, design, art, audio, qa (lowercase English).`;
+    const text = await generateWithModel(
+      provider, model, apiKey, systemPrompt, `Game idea: ${idea}`
     );
+    const jsonText = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    const gamePlan = GamePlanSchema.safeParse(JSON.parse(jsonText));
+    if (!gamePlan.success) {
+      res.status(502).json({ error: "INVALID_RESPONSE" });
+      return;
+    }
 
-    res.json(gamePlan);
-  } catch (err) {
-    console.error("Generation error:", err);
-    res.status(500).json({ error: "Failed to generate game plan" });
+    res.json(gamePlan.data);
+  } catch (error) {
+    if (error instanceof ModelRequestError) {
+      res.status(error.status).json({ error: error.code });
+      return;
+    }
+    // Malformed model output is not an application error. Never log the API key or payload.
+    res.status(502).json({ error: "INVALID_RESPONSE" });
   }
 });

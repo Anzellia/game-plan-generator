@@ -1,6 +1,13 @@
 import { useMutation } from "@tanstack/react-query";
 import type { GamePlan, GameIdeaInput } from "./types";
 
+export class GenerateError extends Error {
+  constructor(public readonly code: string) {
+    super(code);
+    this.name = "GenerateError";
+  }
+}
+
 export async function generateGamePlan(input: GameIdeaInput): Promise<GamePlan> {
   const response = await fetch("/api/generate", {
     method: "POST",
@@ -9,7 +16,10 @@ export async function generateGamePlan(input: GameIdeaInput): Promise<GamePlan> 
   });
 
   if (!response.ok) {
-    throw new Error("Failed to generate game plan");
+    const payload = await response.json().catch(() => null);
+    throw new GenerateError(
+      typeof payload?.error === "string" ? payload.error : "GENERATION_FAILED"
+    );
   }
 
   return response.json();

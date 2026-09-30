@@ -12,27 +12,19 @@
 ```
 Node.js 18+
 pnpm 8+
-OpenAI API Key
+An API key from your selected AI provider
 ```
 
 ### 1. 克隆并安装 / Clone & Install
 
 ```bash
-git clone https://github.com/Genoglander/game-plan-generator.git
+git clone https://github.com/Anzellia/game-plan-generator.git
 ```
 ```
 pnpm install
 ```
 
-### 2. 配置 API Key / Set up API Key
-
-在项目根目录新建 `.env` 文件，填入你的 OpenAI Key：
-
-```env
-OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-### 3. 启动 / Start
+### 2. 启动 / Start
 
 在终端运行 / Run in terminal:
 
@@ -41,6 +33,12 @@ pnpm run dev
 ```
 
 浏览器打开 → **http://localhost:5173**
+
+在输入页选择 AI 厂商和模型，并输入对应厂商的 API Key。密钥按厂商分别保存在**当前浏览器的 localStorage** 中；切换厂商时会载入该厂商保存的密钥，也可以在界面中清除。生成时，密钥会通过本站服务端转发给所选厂商，但不会保存在服务端或仓库。请勿在共用设备上保存密钥。
+
+Select an AI provider and model on the input screen, then enter that provider's API key. Keys are saved **per provider in this browser's localStorage** and can be cleared in the UI. During generation the key passes through this app's server to the selected provider; it is not persisted on the server or committed to the repository. Avoid saving keys on shared devices.
+
+模型名称和 ID 按界面列出；是否可用取决于厂商是否提供该 ID，以及你的账户是否有访问权限。无法访问时，界面会显示相应错误，不会自动切换到其他模型。
 
 ---
 
@@ -54,6 +52,7 @@ pnpm run dev
 | 七天开发计划 | 7-day development plan | 7日間の開発計画 |
 | 中 / 日 / EN 界面与内容语言切换 | Switch UI & AI output language: ZH / JA / EN | UI・AI出力言語の切り替え（中/日/英）|
 | 导出 Markdown / PNG | Export as Markdown or PNG | Markdown・PNG エクスポート |
+| 选择 AI 厂商与模型，保存各厂商的密钥 | Select a provider/model and save a key per provider | AI プロバイダー・モデルを選択、キーをプロバイダー別に保存 |
 
 ---
 
@@ -61,8 +60,8 @@ pnpm run dev
 
 - **Frontend:** React + Vite + TypeScript + Tailwind CSS + shadcn/ui
 - **Backend:** Express + TypeScript
-- **AI:** OpenAI GPT-4.1-mini
-- **Package Manager:** pnpm (monorepo) + Orval codegen
+- **AI:** OpenAI, Anthropic, Google, xAI, DeepSeek (using user-supplied keys)
+- **Package Manager:** pnpm
 - **Export:** html-to-image (PNG), Markdown
 
 ---
@@ -70,13 +69,8 @@ pnpm run dev
 ## 📁 项目结构 / Project Structure
 
 ```
-├── artifacts/
-│   ├── api-server/        # Express API server
-│   └── game-planner/      # React frontend
-├── lib/
-│   ├── api-spec/          # OpenAPI spec + codegen config
-│   ├── api-client-react/  # Generated React Query hooks
-│   └── api-zod/           # Generated Zod validators
+├── client/                 # React frontend
+├── server/                 # Express API server
 └── package.json
 ```
 
