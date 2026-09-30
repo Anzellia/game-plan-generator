@@ -34,11 +34,13 @@ pnpm run dev
 
 浏览器打开 → **http://localhost:5173**
 
-在输入页选择 AI 厂商和模型，并输入对应厂商的 API Key。密钥按厂商分别保存在**当前浏览器的 localStorage** 中；切换厂商时会载入该厂商保存的密钥，也可以在界面中清除。生成时，密钥会通过本站服务端转发给所选厂商，但不会保存在服务端或仓库。请勿在共用设备上保存密钥。
+在输入页选择 AI 厂商并输入对应厂商的 API Key。点击**测试连接**，应用会从厂商接口读取此 Key 可见的文本模型 ID，并向当前选中的模型发送一条简短请求，以验证它能被调用；这条测试请求可能产生少量厂商费用。你也可以直接输入自定义模型 ID。模型 ID 不再使用预置名单，实际可用性以厂商和你的账户权限为准。
 
-Select an AI provider and model on the input screen, then enter that provider's API key. Keys are saved **per provider in this browser's localStorage** and can be cleared in the UI. During generation the key passes through this app's server to the selected provider; it is not persisted on the server or committed to the repository. Avoid saving keys on shared devices.
+Choose a provider and enter its API key. **Test connection** retrieves the text-model IDs visible to that key and sends a short request to the selected model to verify it can be called; the provider may charge a small amount. You can also enter a custom model ID. The model list comes from the provider, not a hard-coded catalog, and availability depends on your account.
 
-模型名称和 ID 按界面列出；是否可用取决于厂商是否提供该 ID，以及你的账户是否有访问权限。无法访问时，界面会显示相应错误，不会自动切换到其他模型。
+密钥按厂商分别保存在**当前浏览器的 localStorage** 中，切换厂商时会载入该厂商保存的密钥，也可以在界面中清除。模型 ID 也会按厂商记住。测试连接和生成时，密钥会通过本站服务端转发给所选厂商，但不会保存在服务端或仓库。请勿在共用设备上保存密钥。模型无法访问时会显示错误，不会自动切换到其他模型。
+
+Keys are saved **per provider in this browser's localStorage** and can be cleared in the UI. Model IDs are remembered per provider too. During connection tests and generation, the key passes through this app's server to the selected provider; it is not persisted on the server or committed to the repository. Avoid saving keys on shared devices. Failed model calls never silently switch providers or models.
 
 ---
 
@@ -52,6 +54,7 @@ Select an AI provider and model on the input screen, then enter that provider's 
 | 七天开发计划 | 7-day development plan | 7日間の開発計画 |
 | 中 / 日 / EN 界面与内容语言切换 | Switch UI & AI output language: ZH / JA / EN | UI・AI出力言語の切り替え（中/日/英）|
 | 导出 Markdown / PNG | Export as Markdown or PNG | Markdown・PNG エクスポート |
+| 测试连接、读取可用模型、手动输入模型 ID | Test connections, load available models, enter a custom ID | 接続テスト、利用可能なモデル取得、モデル ID 手入力 |
 | 选择 AI 厂商与模型，保存各厂商的密钥 | Select a provider/model and save a key per provider | AI プロバイダー・モデルを選択、キーをプロバイダー別に保存 |
 
 ---

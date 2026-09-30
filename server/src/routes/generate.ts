@@ -2,16 +2,21 @@ import { Router } from "express";
 import { z } from "zod";
 import {
   generateWithModel,
-  isSupportedModel,
+  isValidModelId,
+  listProviderModels,
   ModelRequestError,
+  testModelConnection,
 } from "../lib/model-providers";
 
-const GenerateGamePlanBody = z.object({
+const ProviderKeyBody = z.object({
+  provider: z.enum(["openai", "anthropic", "google", "xai", "deepseek"]),
+  apiKey: z.string().trim().min(1).max(512),
+});
+const ModelIdBody = z.string().trim().min(1).max(200).refine(isValidModelId);
+const TestModelBody = ProviderKeyBody.extend({ model: ModelIdBody });
+const GenerateGamePlanBody = TestModelBody.extend({
   idea: z.string().trim().min(1).max(4000),
   language: z.enum(["zh", "ja", "en"]).optional(),
-  provider: z.enum(["openai", "anthropic", "google", "xai", "deepseek"]),
-  model: z.string().min(1).max(100),
-  apiKey: z.string().trim().min(1).max(512),
 });
 
 const GamePlanSchema = z.object({
@@ -54,6 +59,47 @@ const LANGUAGE_INSTRUCTIONS: Record<string, string> = {
 
 export const generateRouter = Router();
 
+generateRouter.use((_req, res, next) => {
+  res.set("Cache-Control", "no-store");
+  next();
+});
+
+generateRouter.post("/models", async (req, res) => {
+  const parsed = ProviderKeyBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "INVALID_REQUEST" });
+    return;
+  }
+  try {
+    const models = await listProviderModels(parsed.data.provider, parsed.data.apiKey);
+    res.json({ models });
+  } catch (error) {
+    if (error instanceof ModelRequestError) {
+      res.status(error.status).json({ error: error.code });
+      return;
+    }
+    res.status(502).json({ error: "PROVIDER_UNAVAILABLE" });
+  }
+});
+
+generateRouter.post("/models/test", async (req, res) => {
+  const parsed = TestModelBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "INVALID_REQUEST" });
+    return;
+  }
+  try {
+    await testModelConnection(parsed.data.provider, parsed.data.model, parsed.data.apiKey);
+    res.json({ ok: true });
+  } catch (error) {
+    if (error instanceof ModelRequestError) {
+      res.status(error.status).json({ error: error.code });
+      return;
+    }
+    res.status(502).json({ error: "PROVIDER_UNAVAILABLE" });
+  }
+});
+
 generateRouter.post("/generate", async (req, res) => {
   const parsed = GenerateGamePlanBody.safeParse(req.body);
   if (!parsed.success) {
@@ -62,10 +108,6 @@ generateRouter.post("/generate", async (req, res) => {
   }
 
   const { idea, language = "zh", provider, model, apiKey } = parsed.data;
-  if (!isSupportedModel(provider, model)) {
-    res.status(400).json({ error: "MODEL_NOT_SUPPORTED" });
-    return;
-  }
 
   const langInstruction =
     LANGUAGE_INSTRUCTIONS[language] ?? LANGUAGE_INSTRUCTIONS.zh;

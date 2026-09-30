@@ -1,4 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
+import type { AvailableModel, ProviderId } from "./ai-models";
 import type { GamePlan, GameIdeaInput } from "./types";
 
 export class GenerateError extends Error {
@@ -8,11 +9,12 @@ export class GenerateError extends Error {
   }
 }
 
-export async function generateGamePlan(input: GameIdeaInput): Promise<GamePlan> {
-  const response = await fetch("/api/generate", {
+async function postJson<T>(path: string, input: object): Promise<T> {
+  const response = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
+    cache: "no-store",
   });
 
   if (!response.ok) {
@@ -22,7 +24,19 @@ export async function generateGamePlan(input: GameIdeaInput): Promise<GamePlan> 
     );
   }
 
-  return response.json();
+  return response.json() as Promise<T>;
+}
+
+export function fetchAvailableModels(provider: ProviderId, apiKey: string) {
+  return postJson<{ models: AvailableModel[] }>("/api/models", { provider, apiKey });
+}
+
+export function testModelConnection(provider: ProviderId, model: string, apiKey: string) {
+  return postJson<{ ok: boolean }>("/api/models/test", { provider, model, apiKey });
+}
+
+export async function generateGamePlan(input: GameIdeaInput): Promise<GamePlan> {
+  return postJson<GamePlan>("/api/generate", input);
 }
 
 export function useGenerateGamePlan() {

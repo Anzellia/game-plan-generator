@@ -1,19 +1,10 @@
-export const SUPPORTED_MODELS = {
-  openai: ["gpt-5.6-sol", "gpt-5.6", "gpt-5.6-terra", "gpt-5.6-luna"],
-  anthropic: ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"],
-  google: ["gemini-3.1-pro", "gemini-3.8-flash", "gemini-3.5-flash-lite"],
-  xai: ["grok-4.7", "grok-4.6", "grok-4.5", "grok-4.20-0309-reasoning"],
-  deepseek: ["deepseek-v4-pro", "deepseek-flash"],
-} as const;
+export const PROVIDER_IDS = ["openai", "anthropic", "google", "xai", "deepseek"] as const;
+export type ProviderId = (typeof PROVIDER_IDS)[number];
+export type AvailableModel = { id: string; name: string };
 
-export type ProviderId = keyof typeof SUPPORTED_MODELS;
-
-export function isProviderId(value: string): value is ProviderId {
-  return Object.prototype.hasOwnProperty.call(SUPPORTED_MODELS, value);
-}
-
-export function isSupportedModel(provider: ProviderId, model: string): boolean {
-  return (SUPPORTED_MODELS[provider] as readonly string[]).includes(model);
+// A custom ID can contain provider aliases and fine-tune separators, but never URL/query controls.
+export function isValidModelId(value: string): boolean {
+  return value.length > 0 && value.length <= 200 && /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(value);
 }
 
 export type ModelErrorCode =
@@ -81,6 +72,191 @@ function responseText(provider: ProviderId, payload: unknown): string {
   return isRecord(message) && typeof message.content === "string" ? message.content : "";
 }
 
+function providerHeaders(provider: ProviderId, apiKey: string): Record<string, string> {
+  if (provider === "anthropic") {
+    return { "x-api-key": apiKey, "anthropic-version": "2023-06-01" };
+  }
+  if (provider === "google") return { "x-goog-api-key": apiKey };
+  return { Authorization: `Bearer ${apiKey}` };
+}
+
+async function requestJson(
+  url: string,
+  headers: Record<string, string>,
+  body?: object,
+  timeoutMs = 20_000
+): Promise<unknown> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: body ? "POST" : "GET",
+      headers: body ? { ...headers, "Content-Type": "application/json" } : headers,
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw providerError(response.status);
+    return await response.json().catch(() => {
+      throw new ModelRequestError("INVALID_RESPONSE", 502);
+    });
+  } catch (error) {
+    if (error instanceof ModelRequestError) throw error;
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new ModelRequestError("TIMEOUT", 504);
+    }
+    // Never log headers, request bodies, or upstream responses: they can contain a user key.
+    throw new ModelRequestError("PROVIDER_UNAVAILABLE", 502);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isTextModel(provider: ProviderId, item: Record<string, unknown>, id: string): boolean {
+  if (provider === "openai") {
+    return /^(gpt-|chatgpt-|o[1-9]\d*(?:$|[-.]))/i.test(id) &&
+      !/(audio|realtime|transcrib|tts|image|embedding|moderation|search|speech|video|instruct)/i.test(id);
+  }
+  if (provider === "google") {
+    return id.startsWith("gemini-") &&
+      Array.isArray(item.supportedGenerationMethods) &&
+      item.supportedGenerationMethods.includes("generateContent") &&
+      !/(image|audio|video|tts|embedding|native-audio)/i.test(id);
+  }
+  if (provider === "xai") {
+    return !Array.isArray(item.output_modalities) || item.output_modalities.includes("text");
+  }
+  return true;
+}
+
+function parseModels(provider: ProviderId, entries: unknown): AvailableModel[] {
+  if (!Array.isArray(entries)) throw new ModelRequestError("INVALID_RESPONSE", 502);
+  const models: AvailableModel[] = [];
+  const seen = new Set<string>();
+  for (const value of entries) {
+    if (!isRecord(value)) continue;
+    const rawId = provider === "google" && typeof value.name === "string"
+      ? value.name.replace(/^models\//, "")
+      : value.id;
+    if (typeof rawId !== "string" || !isValidModelId(rawId) ||
+        !isTextModel(provider, value, rawId) || seen.has(rawId)) continue;
+    seen.add(rawId);
+    const display = provider === "google" ? value.displayName : value.display_name;
+    models.push({ id: rawId, name: typeof display === "string" && display.length <= 100 ? display : rawId });
+    if (models.length === 200) break;
+  }
+  return models;
+}
+
+// This list is fetched for the user's key, rather than guessing IDs that may not exist.
+export async function listProviderModels(provider: ProviderId, apiKey: string): Promise<AvailableModel[]> {
+  const headers = providerHeaders(provider, apiKey);
+  const entries: unknown[] = [];
+  if (provider === "anthropic") {
+    let afterId: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const url = new URL("https://api.anthropic.com/v1/models");
+      url.searchParams.set("limit", "100");
+      if (afterId) url.searchParams.set("after_id", afterId);
+      const payload = await requestJson(url.toString(), headers);
+      if (!isRecord(payload) || !Array.isArray(payload.data)) {
+        throw new ModelRequestError("INVALID_RESPONSE", 502);
+      }
+      entries.push(...payload.data);
+      if (!payload.has_more) break;
+      if (typeof payload.last_id !== "string" || payload.last_id === afterId) {
+        throw new ModelRequestError("INVALID_RESPONSE", 502);
+      }
+      afterId = payload.last_id;
+    }
+  } else if (provider === "google") {
+    let pageToken: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const url = new URL("https://generativelanguage.googleapis.com/v1beta/models");
+      url.searchParams.set("pageSize", "1000");
+      if (pageToken) url.searchParams.set("pageToken", pageToken);
+      const payload = await requestJson(url.toString(), headers);
+      if (!isRecord(payload) || (payload.models !== undefined && !Array.isArray(payload.models))) {
+        throw new ModelRequestError("INVALID_RESPONSE", 502);
+      }
+      entries.push(...(payload.models ?? []));
+      if (typeof payload.nextPageToken !== "string" || !payload.nextPageToken) break;
+      if (payload.nextPageToken === pageToken) throw new ModelRequestError("INVALID_RESPONSE", 502);
+      pageToken = payload.nextPageToken;
+    }
+  } else {
+    const url = provider === "openai" ? "https://api.openai.com/v1/models"
+      : provider === "xai" ? "https://api.x.ai/v1/language-models"
+      : "https://api.deepseek.com/models";
+    const payload = await requestJson(url, headers);
+    if (!isRecord(payload)) throw new ModelRequestError("INVALID_RESPONSE", 502);
+    const collection = provider === "xai" ? payload.models : payload.data;
+    if (!Array.isArray(collection)) throw new ModelRequestError("INVALID_RESPONSE", 502);
+    entries.push(...collection);
+  }
+  return parseModels(provider, entries);
+}
+
+function modelRequest(
+  provider: ProviderId,
+  model: string,
+  apiKey: string,
+  systemPrompt: string,
+  userPrompt: string,
+  probe: boolean
+): { url: string; headers: Record<string, string>; body: object } {
+  const headers = providerHeaders(provider, apiKey);
+  if (provider === "anthropic") {
+    return {
+      url: "https://api.anthropic.com/v1/messages",
+      headers,
+      body: {
+        model, max_tokens: probe ? 32 : 8192,
+        ...(probe ? {} : { system: systemPrompt }),
+        messages: [{ role: "user", content: userPrompt }],
+      },
+    };
+  }
+  if (provider === "google") {
+    return {
+      url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+      headers,
+      body: {
+        ...(probe ? {} : { systemInstruction: { parts: [{ text: systemPrompt }] } }),
+        contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+        generationConfig: probe
+          ? { maxOutputTokens: 32 }
+          : { responseMimeType: "application/json", maxOutputTokens: 8192 },
+      },
+    };
+  }
+  const baseUrl = provider === "openai" ? "https://api.openai.com/v1"
+    : provider === "xai" ? "https://api.x.ai/v1" : "https://api.deepseek.com/v1";
+  return {
+    url: `${baseUrl}/chat/completions`,
+    headers,
+    body: {
+      model,
+      messages: [
+        ...(probe ? [] : [{ role: "system", content: systemPrompt }]),
+        { role: "user", content: userPrompt },
+      ],
+      ...(probe ? provider === "openai"
+        ? { max_completion_tokens: 32 }
+        : { max_tokens: 32 } : {}),
+    },
+  };
+}
+
+export async function testModelConnection(
+  provider: ProviderId,
+  model: string,
+  apiKey: string
+): Promise<void> {
+  const request = modelRequest(provider, model, apiKey, "", "Reply with OK.", true);
+  const payload = await requestJson(request.url, request.headers, request.body, 30_000);
+  if (!isRecord(payload) || "error" in payload) throw new ModelRequestError("INVALID_RESPONSE", 502);
+}
+
 export async function generateWithModel(
   provider: ProviderId,
   model: string,
@@ -88,75 +264,9 @@ export async function generateWithModel(
   systemPrompt: string,
   userPrompt: string
 ): Promise<string> {
-  let url: string;
-  let headers: Record<string, string>;
-  let body: object;
-
-  if (provider === "anthropic") {
-    url = "https://api.anthropic.com/v1/messages";
-    headers = {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    };
-    body = {
-      model,
-      max_tokens: 8192,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
-    };
-  } else if (provider === "google") {
-    url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-    headers = { "Content-Type": "application/json", "x-goog-api-key": apiKey };
-    body = {
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-      generationConfig: { responseMimeType: "application/json", maxOutputTokens: 8192 },
-    };
-  } else {
-    const baseUrl =
-      provider === "openai"
-        ? "https://api.openai.com/v1"
-        : provider === "xai"
-          ? "https://api.x.ai/v1"
-          : "https://api.deepseek.com/v1";
-    url = `${baseUrl}/chat/completions`;
-    headers = { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` };
-    body = {
-      model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-    };
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120_000);
-
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    if (!response.ok) throw providerError(response.status);
-
-    const payload: unknown = await response.json().catch(() => {
-      throw new ModelRequestError("INVALID_RESPONSE", 502);
-    });
-    const text = responseText(provider, payload).trim();
-    if (!text) throw new ModelRequestError("INVALID_RESPONSE", 502);
-    return text;
-  } catch (error) {
-    if (error instanceof ModelRequestError) throw error;
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new ModelRequestError("TIMEOUT", 504);
-    }
-    // Do not log the request or the provider response: both can contain a user-supplied key.
-    throw new ModelRequestError("PROVIDER_UNAVAILABLE", 502);
-  } finally {
-    clearTimeout(timeout);
-  }
+  const request = modelRequest(provider, model, apiKey, systemPrompt, userPrompt, false);
+  const payload = await requestJson(request.url, request.headers, request.body, 120_000);
+  const text = responseText(provider, payload).trim();
+  if (!text) throw new ModelRequestError("INVALID_RESPONSE", 502);
+  return text;
 }

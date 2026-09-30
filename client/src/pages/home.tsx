@@ -1,6 +1,6 @@
 import React, { useState } from "react";
-import { GenerateError, useGenerateGamePlan } from "@/lib/api";
-import { AI_PROVIDERS, isProviderId, modelsFor, type ProviderId } from "@/lib/ai-models";
+import { fetchAvailableModels, GenerateError, testModelConnection, useGenerateGamePlan } from "@/lib/api";
+import { AI_PROVIDERS, isProviderId, type AvailableModel, type ProviderId } from "@/lib/ai-models";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { GamePlanView } from "@/components/game-plan-view";
@@ -13,6 +13,7 @@ import { Loader2, Sparkles, RefreshCw, FileDown, Image, Eye, EyeOff } from "luci
 
 const STORAGE_PREFIX = "game-plan-generator";
 const keyStorageName = (provider: ProviderId) => `${STORAGE_PREFIX}:api-key:${provider}`;
+const modelStorageName = (provider: ProviderId) => `${STORAGE_PREFIX}:model:${provider}`;
 
 function readSavedKey(provider: ProviderId): string {
   try {
@@ -22,15 +23,34 @@ function readSavedKey(provider: ProviderId): string {
   }
 }
 
+function readSavedModel(provider: ProviderId): string {
+  try {
+    return window.localStorage.getItem(modelStorageName(provider)) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 const errorMessages: Record<string, TranslationKey> = {
   API_KEY_REJECTED: "apiKeyRejected",
   MODEL_UNAVAILABLE: "modelUnavailable",
-  MODEL_NOT_SUPPORTED: "modelUnavailable",
+  INVALID_REQUEST: "invalidModelId",
   RATE_LIMITED: "rateLimited",
   PROVIDER_UNAVAILABLE: "providerUnavailable",
   TIMEOUT: "providerTimeout",
   INVALID_RESPONSE: "invalidResponse",
   UPSTREAM_ERROR: "providerRejected",
+};
+
+function errorMessage(error: unknown): TranslationKey {
+  const code = error instanceof GenerateError ? error.code : "";
+  return errorMessages[code] ?? "toastErrorDesc";
+}
+
+type ConnectionStatus = {
+  kind: "success" | "error";
+  message: TranslationKey;
+  detail?: TranslationKey;
 };
 
 export default function Home() {
@@ -43,27 +63,33 @@ export default function Home() {
       return "openai";
     }
   });
-  const [model, setModel] = useState<string>(() => {
-    try {
-      const saved = window.localStorage.getItem(`${STORAGE_PREFIX}:model`);
-      return modelsFor(providerId).find((option) => option.id === saved)?.id ?? modelsFor(providerId)[0].id;
-    } catch {
-      return modelsFor(providerId)[0].id;
-    }
-  });
+  const [model, setModel] = useState(() => readSavedModel(providerId));
+  const [modelMode, setModelMode] = useState<"listed" | "custom">("custom");
+  const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
   const [apiKey, setApiKey] = useState(() => readSavedKey(providerId));
   const [showKey, setShowKey] = useState(false);
   const [storageError, setStorageError] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus | null>(null);
   const [isExportingPng, setIsExportingPng] = useState(false);
   const { toast } = useToast();
   const { t, lang } = useI18n();
 
   const generateMutation = useGenerateGamePlan();
 
-  const saveSelection = (provider: ProviderId, modelId: string) => {
+  const saveProvider = (provider: ProviderId) => {
     try {
       window.localStorage.setItem(`${STORAGE_PREFIX}:provider`, provider);
-      window.localStorage.setItem(`${STORAGE_PREFIX}:model`, modelId);
+      setStorageError(false);
+    } catch {
+      setStorageError(true);
+    }
+  };
+
+  const saveModel = (provider: ProviderId, modelId: string) => {
+    try {
+      if (modelId) window.localStorage.setItem(modelStorageName(provider), modelId);
+      else window.localStorage.removeItem(modelStorageName(provider));
       setStorageError(false);
     } catch {
       setStorageError(true);
@@ -72,22 +98,72 @@ export default function Home() {
 
   const changeProvider = (value: string) => {
     if (!isProviderId(value)) return;
-    const nextModel = modelsFor(value)[0].id;
     setProviderId(value);
-    setModel(nextModel);
+    setModel(readSavedModel(value));
+    setModelMode("custom");
+    setAvailableModels([]);
     setApiKey(readSavedKey(value));
     setShowKey(false);
-    saveSelection(value, nextModel);
+    setConnectionStatus(null);
+    saveProvider(value);
   };
 
   const changeKey = (value: string) => {
     setApiKey(value);
+    setAvailableModels([]);
+    setModelMode("custom");
+    setConnectionStatus(null);
     try {
       if (value) window.localStorage.setItem(keyStorageName(providerId), value);
       else window.localStorage.removeItem(keyStorageName(providerId));
       setStorageError(false);
     } catch {
       setStorageError(true);
+    }
+  };
+
+  const changeModel = (value: string) => {
+    setModel(value);
+    setConnectionStatus(null);
+    saveModel(providerId, value);
+  };
+
+  const handleTestConnection = async () => {
+    const key = apiKey.trim();
+    if (!key) return;
+    setIsTesting(true);
+    setConnectionStatus(null);
+
+    try {
+      const result = await fetchAvailableModels(providerId, key);
+      if (!Array.isArray(result.models) ||
+          result.models.some((item) => typeof item?.id !== "string" || typeof item?.name !== "string")) {
+        throw new GenerateError("INVALID_RESPONSE");
+      }
+      setAvailableModels(result.models);
+      const selectedModel = model.trim() || result.models[0]?.id || "";
+      if (!model.trim() && selectedModel) {
+        setModel(selectedModel);
+        saveModel(providerId, selectedModel);
+      }
+      setModelMode(result.models.some((item) => item.id === selectedModel) ? "listed" : "custom");
+
+      if (!selectedModel) {
+        setConnectionStatus({ kind: "success", message: "connectionNoModels" });
+        return;
+      }
+      try {
+        await testModelConnection(providerId, selectedModel, key);
+        setConnectionStatus({ kind: "success", message: "connectionSuccess" });
+      } catch (error) {
+        setConnectionStatus({
+          kind: "error", message: "connectionModelFailed", detail: errorMessage(error),
+        });
+      }
+    } catch (error) {
+      setConnectionStatus({ kind: "error", message: "connectionFailed", detail: errorMessage(error) });
+    } finally {
+      setIsTesting(false);
     }
   };
 
@@ -110,14 +186,23 @@ export default function Home() {
       return;
     }
 
+    if (!model.trim() || model.trim().length > 200 ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(model.trim())) {
+      toast({
+        title: t("toastRequiredTitle"),
+        description: t(model.trim() ? "invalidModelId" : "modelRequired"),
+        variant: "destructive",
+      });
+      return;
+    }
+
     generateMutation.mutate(
-      { idea, language: lang, provider: providerId, model, apiKey: apiKey.trim() },
+      { idea, language: lang, provider: providerId, model: model.trim(), apiKey: apiKey.trim() },
       {
         onError: (error) => {
-          const code = error instanceof GenerateError ? error.code : "";
           toast({
             title: t("toastErrorTitle"),
-            description: t(errorMessages[code] ?? "toastErrorDesc"),
+            description: t(errorMessage(error)),
             variant: "destructive",
           });
         },
@@ -151,6 +236,7 @@ export default function Home() {
   };
 
   const isGenerating = generateMutation.isPending;
+  const isBusy = isGenerating || isTesting;
   const gamePlan = generateMutation.data;
 
   return (
@@ -193,44 +279,21 @@ export default function Home() {
               />
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <label htmlFor="ai-provider" className="block text-sm font-bold text-foreground uppercase tracking-wide">
-                  {t("providerLabel")}
-                </label>
-                <select
-                  id="ai-provider"
-                  value={providerId}
-                  onChange={(event) => changeProvider(event.target.value)}
-                  disabled={isGenerating}
-                  className="w-full h-12 rounded-lg border-2 border-muted bg-background px-3 text-foreground font-medium focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
-                >
-                  {AI_PROVIDERS.map((provider) => (
-                    <option key={provider.id} value={provider.id}>{provider.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="space-y-2">
-                <label htmlFor="ai-model" className="block text-sm font-bold text-foreground uppercase tracking-wide">
-                  {t("modelLabel")}
-                </label>
-                <select
-                  id="ai-model"
-                  value={model}
-                  onChange={(event) => {
-                    setModel(event.target.value);
-                    saveSelection(providerId, event.target.value);
-                  }}
-                  disabled={isGenerating}
-                  className="w-full h-12 rounded-lg border-2 border-muted bg-background px-3 text-foreground font-medium focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
-                >
-                  {modelsFor(providerId).map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.name} · {option.id}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            <div className="space-y-2">
+              <label htmlFor="ai-provider" className="block text-sm font-bold text-foreground uppercase tracking-wide">
+                {t("providerLabel")}
+              </label>
+              <select
+                id="ai-provider"
+                value={providerId}
+                onChange={(event) => changeProvider(event.target.value)}
+                disabled={isBusy}
+                className="w-full h-12 rounded-lg border-2 border-muted bg-background px-3 text-foreground font-medium focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+              >
+                {AI_PROVIDERS.map((provider) => (
+                  <option key={provider.id} value={provider.id}>{provider.name}</option>
+                ))}
+              </select>
             </div>
 
             <div className="space-y-2">
@@ -246,7 +309,7 @@ export default function Home() {
                   placeholder={t("apiKeyPlaceholder")}
                   autoComplete="off"
                   spellCheck={false}
-                  disabled={isGenerating}
+                  disabled={isBusy}
                   className="min-w-0 flex-1 h-12 rounded-lg border-2 border-muted bg-background px-3 text-foreground font-medium focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
                 />
                 <button
@@ -261,7 +324,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => { changeKey(""); setShowKey(false); }}
-                  disabled={!apiKey || isGenerating}
+                  disabled={!apiKey || isBusy}
                   className="h-12 shrink-0 rounded-lg border-2 border-muted bg-background px-3 text-sm font-bold hover:border-destructive disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 >
                   {t("clearKey")}
@@ -269,12 +332,90 @@ export default function Home() {
               </div>
               <p className="text-xs text-muted-foreground">{t("apiKeyNotice")}</p>
               {storageError && <p role="alert" className="text-xs text-destructive">{t("storageUnavailable")}</p>}
+              <div className="flex flex-wrap items-center gap-3 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleTestConnection}
+                  disabled={isBusy || !apiKey.trim()}
+                  className="h-11 border-2 font-bold"
+                >
+                  {isTesting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {t(isTesting ? "testingConnection" : "testConnection")}
+                </Button>
+                <p className="text-xs text-muted-foreground flex-1 min-w-[180px]">
+                  {t("testConnectionNotice")}
+                </p>
+              </div>
+              {connectionStatus && (
+                <p
+                  role={connectionStatus.kind === "error" ? "alert" : "status"}
+                  className={`rounded-lg border px-4 py-3 text-sm ${
+                    connectionStatus.kind === "error"
+                      ? "border-destructive/40 bg-destructive/5 text-destructive"
+                      : "border-primary/30 bg-primary/5 text-foreground"
+                  }`}
+                >
+                  {t(connectionStatus.message)} {connectionStatus.detail && t(connectionStatus.detail)}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              {availableModels.length > 0 && (
+                <>
+                  <label htmlFor="ai-model-choice" className="block text-sm font-bold text-foreground uppercase tracking-wide">
+                    {t("modelLabel")}
+                  </label>
+                  <select
+                    id="ai-model-choice"
+                    value={modelMode === "listed" ? model : "__custom__"}
+                    onChange={(event) => {
+                      if (event.target.value === "__custom__") {
+                        setModelMode("custom");
+                        changeModel("");
+                      } else {
+                        setModelMode("listed");
+                        changeModel(event.target.value);
+                      }
+                    }}
+                    disabled={isBusy}
+                    className="w-full h-12 rounded-lg border-2 border-muted bg-background px-3 text-foreground font-medium focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+                  >
+                    {availableModels.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.name === option.id ? option.id : `${option.name} · ${option.id}`}
+                      </option>
+                    ))}
+                    <option value="__custom__">{t("customModelOption")}</option>
+                  </select>
+                </>
+              )}
+              {(modelMode === "custom" || availableModels.length === 0) && (
+                <div className="space-y-2">
+                  <label htmlFor="custom-model" className="block text-sm font-bold text-foreground uppercase tracking-wide">
+                    {t("customModelLabel")}
+                  </label>
+                  <input
+                    id="custom-model"
+                    type="text"
+                    value={model}
+                    onChange={(event) => changeModel(event.target.value)}
+                    placeholder={t("modelPlaceholder")}
+                    autoComplete="off"
+                    spellCheck={false}
+                    disabled={isBusy}
+                    className="w-full h-12 rounded-lg border-2 border-muted bg-background px-3 text-foreground font-medium focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+                  />
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">{t("modelListHint")}</p>
             </div>
 
             <Button
               size="lg"
               onClick={handleGenerate}
-              disabled={isGenerating || !idea.trim()}
+              disabled={isBusy || !idea.trim()}
               className="w-full text-lg font-bold uppercase tracking-wider h-14 bg-primary hover:bg-primary/90 text-primary-foreground border-2 border-transparent shadow-[4px_4px_0px_0px_rgba(0,0,0,0.1)] active:shadow-none active:translate-y-1 transition-all"
             >
               {isGenerating ? (
