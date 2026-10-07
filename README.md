@@ -80,11 +80,14 @@ pnpm run dev
 
 <details>
 <summary>展开「光轨修复师」输出示例 / View example / 出力例を表示</summary>
-
-
+<br><br>
 提示词：我想做一个用于游戏竞赛的桌面益智解谜游戏。
+<br>
 
-![完整企划书输出](docs/images/light-track-repairer.png)
+<br>
+<img src="docs/images/light-track-repairer.png"
+     alt="完整企划书输出"
+     width="500">
 
 </details>
 
