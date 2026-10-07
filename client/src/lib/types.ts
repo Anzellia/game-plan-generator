@@ -1,3 +1,5 @@
+import type { ProviderId } from "./ai-models";
+
 export interface DesignDoc {
   title: string;
   genre: string;
@@ -41,4 +43,7 @@ export interface GamePlan {
 export interface GameIdeaInput {
   idea: string;
   language?: "zh" | "ja" | "en";
+  provider: ProviderId;
+  model: string;
+  apiKey: string;
 }
