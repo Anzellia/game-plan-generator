@@ -9,7 +9,7 @@ import { LoadingScreen } from "@/components/loading-screen";
 import { useToast } from "@/hooks/use-toast";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
 import { downloadMarkdown, downloadPNG } from "@/lib/export";
-import { Loader2, Sparkles, RefreshCw, FileDown, Image, Eye, EyeOff } from "lucide-react";
+import { Loader2, Sparkles, RefreshCw, FileDown, Image, Eye, EyeOff, Settings2, ChevronDown } from "lucide-react";
 
 const STORAGE_PREFIX = "game-plan-generator";
 const keyStorageName = (provider: ProviderId) => `${STORAGE_PREFIX}:api-key:${provider}`;
@@ -68,6 +68,7 @@ export default function Home() {
   const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
   const [apiKey, setApiKey] = useState(() => readSavedKey(providerId));
   const [showKey, setShowKey] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [storageError, setStorageError] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus | null>(null);
@@ -178,6 +179,7 @@ export default function Home() {
     }
 
     if (!apiKey.trim()) {
+      setSettingsOpen(true);
       toast({
         title: t("toastRequiredTitle"),
         description: t("apiKeyRequired"),
@@ -188,6 +190,7 @@ export default function Home() {
 
     if (!model.trim() || model.trim().length > 200 ||
         !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(model.trim())) {
+      setSettingsOpen(true);
       toast({
         title: t("toastRequiredTitle"),
         description: t(model.trim() ? "invalidModelId" : "modelRequired"),
@@ -279,6 +282,45 @@ export default function Home() {
               />
             </div>
 
+            <section className="overflow-hidden rounded-lg border-2 border-muted">
+              <button
+                id="ai-settings-toggle"
+                type="button"
+                aria-expanded={settingsOpen}
+                aria-controls="ai-settings-panel"
+                disabled={isBusy}
+                onClick={() => {
+                  setSettingsOpen((open) => !open);
+                  setShowKey(false);
+                }}
+                className="flex w-full items-center gap-3 bg-background p-4 text-left transition-colors hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary disabled:opacity-50"
+              >
+                <Settings2 className="h-5 w-5 shrink-0 text-primary" aria-hidden="true" />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-bold">{t("aiSettings")}</span>
+                  <span className="block break-all text-xs text-muted-foreground">
+                    {AI_PROVIDERS.find((provider) => provider.id === providerId)?.name}
+                    {" · "}{model.trim() || t("modelNotSelected")}
+                    {(!apiKey.trim() || !model.trim()) && (
+                      <span className="ml-2 text-primary">{t("settingsIncomplete")}</span>
+                    )}
+                  </span>
+                </span>
+                <span className="shrink-0 text-xs font-bold text-muted-foreground">
+                  {t(settingsOpen ? "hideSettings" : "showSettings")}
+                </span>
+                <ChevronDown
+                  aria-hidden="true"
+                  className={`h-4 w-4 shrink-0 transition-transform ${settingsOpen ? "rotate-180" : ""}`}
+                />
+              </button>
+              <div
+                id="ai-settings-panel"
+                role="region"
+                aria-labelledby="ai-settings-toggle"
+                hidden={!settingsOpen}
+                className="space-y-6 border-t-2 border-muted p-4 md:p-6"
+              >
             <div className="space-y-2">
               <label htmlFor="ai-provider" className="block text-sm font-bold text-foreground uppercase tracking-wide">
                 {t("providerLabel")}
@@ -411,6 +453,8 @@ export default function Home() {
               )}
               <p className="text-xs text-muted-foreground">{t("modelListHint")}</p>
             </div>
+              </div>
+            </section>
 
             <Button
               size="lg"
