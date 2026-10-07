@@ -1,10 +1,54 @@
-import OpenAI from "openai";
 import { Router } from "express";
 import { z } from "zod";
+import {
+  generateWithModel,
+  isValidModelId,
+  listProviderModels,
+  ModelRequestError,
+  testModelConnection,
+} from "../lib/model-providers";
 
-const GenerateGamePlanBody = z.object({
-  idea: z.string().min(1),
+const ProviderKeyBody = z.object({
+  provider: z.enum(["openai", "anthropic", "google", "xai", "deepseek"]),
+  apiKey: z.string().trim().min(1).max(512),
+});
+const ModelIdBody = z.string().trim().min(1).max(200).refine(isValidModelId);
+const TestModelBody = ProviderKeyBody.extend({ model: ModelIdBody });
+const GenerateGamePlanBody = TestModelBody.extend({
+  idea: z.string().trim().min(1).max(4000),
   language: z.enum(["zh", "ja", "en"]).optional(),
+});
+
+const GamePlanSchema = z.object({
+  designDoc: z.object({
+    title: z.string(),
+    genre: z.string(),
+    concept: z.string(),
+    coreLoop: z.string(),
+    targetAudience: z.string(),
+    platforms: z.array(z.string()),
+    features: z.array(z.string()).optional(),
+  }),
+  taskList: z.array(z.object({
+    id: z.number(),
+    category: z.string(),
+    title: z.string(),
+    description: z.string().nullable().optional(),
+    priority: z.string(),
+    estimatedHours: z.number(),
+  })),
+  technicalChallenges: z.array(z.object({
+    title: z.string(),
+    difficulty: z.string(),
+    description: z.string(),
+    solution: z.string(),
+  })),
+  weeklyPlan: z.array(z.object({
+    day: z.number(),
+    label: z.string(),
+    tasks: z.array(z.string()),
+    milestone: z.string(),
+  })).length(7),
 });
 
 const LANGUAGE_INSTRUCTIONS: Record<string, string> = {
@@ -15,26 +59,61 @@ const LANGUAGE_INSTRUCTIONS: Record<string, string> = {
 
 export const generateRouter = Router();
 
+generateRouter.use((_req, res, next) => {
+  res.set("Cache-Control", "no-store");
+  next();
+});
+
+generateRouter.post("/models", async (req, res) => {
+  const parsed = ProviderKeyBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "INVALID_REQUEST" });
+    return;
+  }
+  try {
+    const models = await listProviderModels(parsed.data.provider, parsed.data.apiKey);
+    res.json({ models });
+  } catch (error) {
+    if (error instanceof ModelRequestError) {
+      res.status(error.status).json({ error: error.code });
+      return;
+    }
+    res.status(502).json({ error: "PROVIDER_UNAVAILABLE" });
+  }
+});
+
+generateRouter.post("/models/test", async (req, res) => {
+  const parsed = TestModelBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "INVALID_REQUEST" });
+    return;
+  }
+  try {
+    await testModelConnection(parsed.data.provider, parsed.data.model, parsed.data.apiKey);
+    res.json({ ok: true });
+  } catch (error) {
+    if (error instanceof ModelRequestError) {
+      res.status(error.status).json({ error: error.code });
+      return;
+    }
+    res.status(502).json({ error: "PROVIDER_UNAVAILABLE" });
+  }
+});
+
 generateRouter.post("/generate", async (req, res) => {
   const parsed = GenerateGamePlanBody.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: "Invalid request body" });
+    res.status(400).json({ error: "INVALID_REQUEST" });
     return;
   }
 
-  const { idea, language = "zh" } = parsed.data;
+  const { idea, language = "zh", provider, model, apiKey } = parsed.data;
+
   const langInstruction =
     LANGUAGE_INSTRUCTIONS[language] ?? LANGUAGE_INSTRUCTIONS.zh;
 
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
   try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
-      messages: [
-        {
-          role: "system",
-          content: `You are a professional game design AI assistant.
+    const systemPrompt = `You are a professional game design AI assistant.
 
 ${langInstruction}
 
@@ -86,25 +165,24 @@ Rules:
 - All keys must be camelCase exactly as shown above.
 - priority values must be exactly: high, medium, or low (lowercase English).
 - difficulty values must be exactly: hard, medium, or easy (lowercase English).
-- category values must be exactly one of: programming, design, art, audio, qa (lowercase English).`,
-        },
-        {
-          role: "user",
-          content: `Game idea: ${idea}`,
-        },
-      ],
-      response_format: {
-        type: "json_object",
-      },
-    });
-
-    const gamePlan = JSON.parse(
-      completion.choices[0].message.content || "{}"
+- category values must be exactly one of: programming, design, art, audio, qa (lowercase English).`;
+    const text = await generateWithModel(
+      provider, model, apiKey, systemPrompt, `Game idea: ${idea}`
     );
+    const jsonText = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    const gamePlan = GamePlanSchema.safeParse(JSON.parse(jsonText));
+    if (!gamePlan.success) {
+      res.status(502).json({ error: "INVALID_RESPONSE" });
+      return;
+    }
 
-    res.json(gamePlan);
-  } catch (err) {
-    console.error("Generation error:", err);
-    res.status(500).json({ error: "Failed to generate game plan" });
+    res.json(gamePlan.data);
+  } catch (error) {
+    if (error instanceof ModelRequestError) {
+      res.status(error.status).json({ error: error.code });
+      return;
+    }
+    // Malformed model output is not an application error. Never log the API key or payload.
+    res.status(502).json({ error: "INVALID_RESPONSE" });
   }
 });
