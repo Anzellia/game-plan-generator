@@ -4,7 +4,7 @@ export type Language = "zh" | "ja" | "en";
 
 export const translations = {
   zh: {
-    systemOnline: "系统在线 // V1.0",
+    systemOnline: "系统在线 // V1.5",
     title: "游戏企划生成器",
     subtitle: "输入一句游戏点子，AI 自动生成完整企划书、任务清单与开发计划。",
     inputLabel: "输入游戏点子",
@@ -73,7 +73,7 @@ export const translations = {
     exporting: "导出中...",
   },
   ja: {
-    systemOnline: "システム起動 // V1.0",
+    systemOnline: "システム起動 // V1.5",
     title: "ゲーム企画ジェネレーター",
     subtitle: "ゲームのアイデアを入力すると、AIが企画書・タスクリスト・開発計画を自動生成します。",
     inputLabel: "ゲームアイデアを入力",
@@ -142,7 +142,7 @@ export const translations = {
     exporting: "出力中...",
   },
   en: {
-    systemOnline: "SYSTEM ONLINE // V1.0",
+    systemOnline: "SYSTEM ONLINE // V1.5",
     title: "Game Plan Generator",
     subtitle: "Turn your game concept into a complete, structured development plan in seconds.",
     inputLabel: "Input Game Idea",
